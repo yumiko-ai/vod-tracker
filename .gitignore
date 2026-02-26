@@ -1,0 +1,12 @@
+__pycache__/
+*.pyc
+*.db
+.env
+venv/
+.venv/
+temp/
+*.mp4
+*.mkv
+*.webm
+*.part
+*.ytdl

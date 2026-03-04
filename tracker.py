@@ -5,12 +5,21 @@ Downloads, segments into clips, and logs everything to SQLite
 """
 
 import json
+import logging
 import os
 import sqlite3
 import subprocess
 import time
 from datetime import datetime
 from pathlib import Path
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S"
+)
+logger = logging.getLogger(__name__)
 
 # Config - Use environment variables with fallbacks
 WORKSPACE = Path(os.environ.get("VOD_WORKSPACE", Path(__file__).parent))
@@ -69,33 +78,98 @@ def load_channels():
 
 
 def get_latest_vod(channel_id):
-    """Get the latest VOD/live for a channel using yt-dlp"""
+    """Get the latest VOD/live for a channel using yt-dlp.
+    
+    Returns the most recent video that:
+    - Has duration >= 60 seconds (skips shorts)
+    - Has duration > 0 (skips live streams, which have duration=0 when live)
+    
+    Returns dict with video_id, title, duration or None if no valid video found.
+    """
+    # Use --print with format specifiers to get id, title, and duration
+    # Note: --flat-playlist is NOT used because it doesn't return duration
+    # Use --playlist-end to limit results (fetching all videos is slow)
     cmd = [
-        *YT_DLP_OPTS,
-        "--flat-playlist",
-        "--print", "video_id,title,duration",
+        "yt-dlp",
+        "--playlist-end", "10",  # Only fetch first 10 videos (most recent)
+        "--print", "%(id)s|%(title)s|%(duration)s",
         f"https://www.youtube.com/channel/{channel_id}/videos"
     ]
+    
+    logger.info(f"Fetching latest videos for channel {channel_id}")
+    
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        
+        # Process stdout regardless of return code - yt-dlp may have valid output
+        # before encountering an error (e.g., age-restricted videos)
         lines = result.stdout.strip().split("\n")
         
-        for line in reversed(lines):
-            if "," in line:
-                parts = line.split(",")
-                if len(parts) >= 3:
-                    video_id = parts[0].strip()
-                    title = ",".join(parts[1:-1]).strip()
-                    try:
-                        duration = int(parts[-1].strip())
-                        # Skip shorts (under 60 sec) and live streams (duration = 0)
-                        if duration >= 60:
-                            return {"video_id": video_id, "title": title, "duration": duration}
-                    except ValueError:
-                        continue
+        # Log errors but continue processing
+        if result.returncode != 0:
+            logger.warning(f"yt-dlp had errors for {channel_id}: {result.stderr.strip()}")
+        
+        if not lines or lines == ['']:
+            logger.warning(f"No videos found for channel {channel_id}")
+            return None
+        
+        logger.info(f"Found {len(lines)} videos for channel {channel_id}")
+        
+        # Process videos (yt-dlp returns most recent first)
+        for line in lines:
+            line = line.strip()
+            if not line:
+                continue
+                
+            # Parse format: video_id|title|duration
+            # Note: title may contain | characters, so we split from the right
+            parts = line.rsplit("|", 2)
+            
+            if len(parts) != 3:
+                logger.debug(f"Skipping malformed line: {line[:100]}...")
+                continue
+            
+            video_id = parts[0].strip()
+            title = parts[1].strip()
+            duration_str = parts[2].strip()
+            
+            # Handle "NA" or missing duration
+            if not duration_str or duration_str.lower() == "na":
+                logger.debug(f"Skipping {video_id}: no duration info (likely live/upcoming)")
+                continue
+            
+            try:
+                duration = int(duration_str)
+            except ValueError:
+                logger.debug(f"Skipping {video_id}: invalid duration '{duration_str}'")
+                continue
+            
+            # Skip live streams (duration = 0 or None when live)
+            if duration == 0:
+                logger.debug(f"Skipping {video_id}: duration=0 (live stream or upcoming)")
+                continue
+            
+            # Skip shorts (under 60 seconds)
+            if duration < 60:
+                logger.debug(f"Skipping {video_id}: duration={duration}s (short)")
+                continue
+            
+            # Found a valid video
+            logger.info(f"Found valid video: {video_id} - '{title}' ({duration}s)")
+            return {
+                "video_id": video_id,
+                "title": title,
+                "duration": duration
+            }
+        
+        logger.warning(f"No valid VOD found for {channel_id} (all videos were shorts, live, or had no duration)")
+        return None
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout fetching VOD for {channel_id}")
         return None
     except Exception as e:
-        print(f"Error fetching VOD for {channel_id}: {e}")
+        logger.error(f"Error fetching VOD for {channel_id}: {e}", exc_info=True)
         return None
 
 
@@ -112,20 +186,30 @@ def download_vod(video_id, channel_id):
         f"https://youtube.com/watch?v={video_id}"
     ]
     
+    logger.info(f"Downloading {video_id} for channel {channel_id}")
+    
     try:
-        subprocess.run(cmd, capture_output=True, timeout=3600)  # 1hr timeout
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)  # 1hr timeout
+        if result.returncode != 0:
+            logger.error(f"yt-dlp download failed: {result.stderr.strip()}")
         # Find the downloaded file
         for f in output_dir.glob(f"{video_id}.*"):
+            logger.info(f"Downloaded to: {f}")
             return str(f)
+        logger.error(f"Downloaded file not found for {video_id}")
+        return None
+    except subprocess.TimeoutExpired:
+        logger.error(f"Timeout downloading {video_id}")
         return None
     except Exception as e:
-        print(f"Error downloading {video_id}: {e}")
+        logger.error(f"Error downloading {video_id}: {e}", exc_info=True)
         return None
 
 
 def segment_video(video_path, video_id, channel_id, clip_duration=300):
     """Cut video into N-minute segments"""
     if not video_path or not os.path.exists(video_path):
+        logger.error(f"Video path does not exist: {video_path}")
         return []
     
     output_dir = UPLOAD_DIR / channel_id / "clips"
@@ -137,7 +221,9 @@ def segment_video(video_path, video_id, channel_id, clip_duration=300):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
         total_duration = int(float(result.stdout.strip()))
-    except:
+        logger.info(f"Video duration: {total_duration}s")
+    except Exception as e:
+        logger.error(f"Failed to get video duration: {e}")
         return []
     
     clips = []
@@ -161,23 +247,28 @@ def segment_video(video_path, video_id, channel_id, clip_duration=300):
         ]
         
         try:
-            subprocess.run(cmd, capture_output=True, timeout=300)  # 5min per clip
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)  # 5min per clip
             if clip_path.exists():
                 clips.append(str(clip_path))
+                logger.debug(f"Created clip: {clip_name}")
+            else:
+                logger.warning(f"Clip not created: {clip_name}")
+        except subprocess.TimeoutExpired:
+            logger.error(f"Timeout creating clip {clip_name}")
         except Exception as e:
-            print(f"Error creating clip {clip_name}: {e}")
+            logger.error(f"Error creating clip {clip_name}: {e}")
     
     return clips
 
 
 def process_channel(conn, channel_id):
     """Check channel for new VODs and process them"""
-    print(f"Checking channel: {channel_id}")
+    logger.info(f"Checking channel: {channel_id}")
     
     # Get latest VOD
     vod = get_latest_vod(channel_id)
     if not vod:
-        print(f"  No VOD found for {channel_id}")
+        logger.info(f"No valid VOD found for {channel_id}")
         return
     
     video_id = vod["video_id"]
@@ -187,11 +278,11 @@ def process_channel(conn, channel_id):
     row = cur.fetchone()
     
     if row and row[0] == "processed":
-        print(f"  Already processed: {video_id}")
+        logger.info(f"Already processed: {video_id}")
         return
     
     if row and row[0] == "downloaded":
-        print(f"  Already downloaded, processing: {video_id}")
+        logger.info(f"Already downloaded, processing: {video_id}")
     else:
         # Log new VOD
         conn.execute("""
@@ -201,11 +292,11 @@ def process_channel(conn, channel_id):
         conn.commit()
     
     # Download
-    print(f"  Downloading: {vod['title']}")
+    logger.info(f"Downloading: {vod['title']}")
     file_path = download_vod(video_id, channel_id)
     
     if not file_path:
-        print(f"  Failed to download")
+        logger.error(f"Failed to download {video_id}")
         return
     
     # Update with file path
@@ -213,7 +304,7 @@ def process_channel(conn, channel_id):
     conn.commit()
     
     # Segment
-    print(f"  Segmenting into 5-min clips...")
+    logger.info(f"Segmenting into 5-min clips...")
     clips = segment_video(file_path, video_id, channel_id)
     
     # Log clips
@@ -247,44 +338,44 @@ def process_channel(conn, channel_id):
                 duration = float(result.stdout.strip())
                 if duration <= 0:
                     all_clips_valid = False
-                    print(f"  Warning: Invalid clip {clip_path} (duration={duration})")
+                    logger.warning(f"Invalid clip {clip_path} (duration={duration})")
                     break
             except Exception as e:
                 all_clips_valid = False
-                print(f"  Warning: Could not verify clip {clip_path}: {e}")
+                logger.warning(f"Could not verify clip {clip_path}: {e}")
                 break
         
         if all_clips_valid:
             try:
                 os.remove(file_path)
-                print(f"  Deleted original to save space (verified {len(clips)} clips)")
+                logger.info(f"Deleted original to save space (verified {len(clips)} clips)")
             except Exception as e:
-                print(f"  Warning: Could not delete original: {e}")
+                logger.warning(f"Could not delete original: {e}")
         else:
-            print(f"  Keeping original due to invalid clips")
+            logger.warning(f"Keeping original due to invalid clips")
     else:
-        print(f"  Keeping original - no clips were created")
+        logger.warning(f"Keeping original - no clips were created")
     
-    print(f"  Done! Created {len(clips)} clips")
+    logger.info(f"Done! Created {len(clips)} clips")
 
 
 def main():
-    print(f"=== VOD Tracker started at {datetime.now()} ===")
+    logger.info(f"=== VOD Tracker started ===")
     
     # Init
     conn = init_db()
     channels = load_channels()
     
-    print(f"Tracking {len(channels)} channels")
+    logger.info(f"Tracking {len(channels)} channels: {channels}")
     
     # Process each channel
     for channel_id in channels:
         try:
             process_channel(conn, channel_id)
         except Exception as e:
-            print(f"Error processing {channel_id}: {e}")
+            logger.error(f"Error processing {channel_id}: {e}", exc_info=True)
     
-    print("=== Done ===")
+    logger.info("=== Done ===")
     conn.close()
 
 

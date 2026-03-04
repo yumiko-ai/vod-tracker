@@ -1,0 +1,17 @@
+# VOD Tracker Test Dependencies
+
+# Testing framework
+pytest>=7.0.0
+pytest-cov>=4.0.0
+
+# Mocking utilities
+pytest-mock>=3.10.0
+
+# Coverage reporting
+coverage>=7.0.0
+
+# Optional: better test output
+pytest-sugar>=0.9.0
+
+# Optional: parallel test execution
+pytest-xdist>=3.0.0

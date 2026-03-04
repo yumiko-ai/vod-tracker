@@ -106,6 +106,12 @@ python3 clip_finder.py video.mp4 --provider openai --model gpt-4o-mini
 export ANTHROPIC_API_KEY="sk-ant-..."
 python3 clip_finder.py video.mp4 --provider anthropic --model claude-3-haiku-20240307
 
+# MiniMax
+export MINIMAX_API_KEY="your-api-key"
+export MINIMAX_GROUP_ID="your-group-id"
+python3 clip_finder.py video.mp4 --provider minimax --model minimax-m2.1
+# or use minimax-m2.5
+
 # Local Ollama
 ollama serve  # In another terminal
 python3 clip_finder.py video.mp4 --provider ollama --model llama3.2
@@ -210,10 +216,12 @@ Extracts clips with intelligent handling:
 |----------|---------|-------------|
 | `VOD_WORKSPACE` | Script directory | Base directory for data |
 | `WHISPER_MODEL` | `turbo` | Whisper model size |
-| `LLM_PROVIDER` | `openai` | LLM provider (openai/anthropic/ollama) |
+| `LLM_PROVIDER` | `openai` | LLM provider (openai/anthropic/minimax/ollama) |
 | `LLM_MODEL` | `gpt-4o-mini` | LLM model name |
 | `OPENAI_API_KEY` | - | OpenAI API key |
 | `ANTHROPIC_API_KEY` | - | Anthropic API key |
+| `MINIMAX_API_KEY` | - | MiniMax API key |
+| `MINIMAX_GROUP_ID` | - | MiniMax group ID (required for MiniMax) |
 | `LLM_API_URL` | `http://localhost:11434/api/generate` | Ollama API URL |
 
 ## Cloud Ready

@@ -27,10 +27,10 @@ DB_PATH = DATA_DIR / "tracker.db"
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "turbo")  # turbo is fast and accurate
 WHISPER_OUTPUT_FORMAT = "json"
 
-# LLM settings - supports OpenAI, Anthropic, or local via Ollama
-LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")  # openai, anthropic, ollama
-LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # gpt-4o-mini, claude-3-haiku, llama3.2
-LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
+# LLM settings - supports OpenAI, Anthropic, MiniMax, or local via Ollama
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")  # openai, anthropic, minimax, ollama
+LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # gpt-4o-mini, claude-3-haiku, minimax-m2.1, llama3.2
+LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "") or os.environ.get("MINIMAX_API_KEY", "")
 LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:11434/api/generate")
 
 # Allowed categories for validation
@@ -261,7 +261,7 @@ def call_llm(transcript_text: str, provider: str = None, model: str = None) -> O
     """
     Call LLM to analyze transcript and find highlights
     
-    Supports: openai, anthropic, ollama (local)
+    Supports: openai, anthropic, minimax, ollama (local)
     """
     provider = provider or LLM_PROVIDER
     model = model or LLM_MODEL
@@ -272,6 +272,8 @@ def call_llm(transcript_text: str, provider: str = None, model: str = None) -> O
         return _call_openai(transcript_text, model)
     elif provider == "anthropic":
         return _call_anthropic(transcript_text, model)
+    elif provider == "minimax":
+        return _call_minimax(transcript_text, model)
     elif provider == "ollama":
         return _call_ollama(transcript_text, model)
     else:
@@ -358,6 +360,64 @@ def _call_anthropic(transcript_text: str, model: str) -> Optional[dict]:
             return parse_llm_response(content)
     except Exception as e:
         print(f"Anthropic API error: {e}")
+        return None
+
+
+def _call_minimax(transcript_text: str, model: str) -> Optional[dict]:
+    """Call MiniMax API"""
+    import urllib.request
+    import urllib.error
+    
+    api_key = os.environ.get("MINIMAX_API_KEY")
+    group_id = os.environ.get("MINIMAX_GROUP_ID")
+    
+    if not api_key:
+        print("MINIMAX_API_KEY not set")
+        return None
+    
+    if not group_id:
+        print("MINIMAX_GROUP_ID not set")
+        return None
+    
+    # Map model names to MiniMax model identifiers
+    model_mapping = {
+        "minimax-m2.1": "MiniMax-M2.1",
+        "minimax-m2.5": "MiniMax-M2.5",
+        "MiniMax-M2.1": "MiniMax-M2.1",
+        "MiniMax-M2.5": "MiniMax-M2.5",
+    }
+    model_id = model_mapping.get(model.lower(), model)
+    
+    url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
+    payload = {
+        "model": model_id,
+        "messages": [
+            {"role": "system", "content": HIGHLIGHT_SYSTEM_PROMPT},
+            {"role": "user", "content": f"Analyze this transcript and find the best moments:\n\n{transcript_text}"}
+        ],
+        "temperature": 0.7,
+        "max_tokens": 4096
+    }
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        "X-Group-Id": group_id
+    }
+    
+    try:
+        req = urllib.request.Request(
+            url,
+            data=json.dumps(payload).encode('utf-8'),
+            headers=headers
+        )
+        with urllib.request.urlopen(req, timeout=120) as response:
+            result = json.loads(response.read().decode('utf-8'))
+            # MiniMax response format is similar to OpenAI
+            content = result["choices"][0]["message"]["content"]
+            return parse_llm_response(content)
+    except Exception as e:
+        print(f"MiniMax API error: {e}")
         return None
 
 
@@ -707,7 +767,7 @@ def main():
     parser.add_argument("--keep-transcript", action="store_true", help="Save transcript JSON")
     parser.add_argument("--reprocess", action="store_true", help="Reprocess already processed VODs")
     parser.add_argument("--model", default=LLM_MODEL, help="LLM model to use")
-    parser.add_argument("--provider", default=LLM_PROVIDER, help="LLM provider (openai, anthropic, ollama)")
+    parser.add_argument("--provider", default=LLM_PROVIDER, help="LLM provider (openai, anthropic, minimax, ollama)")
     parser.add_argument("--whisper-model", default=WHISPER_MODEL, help="Whisper model size")
     
     args = parser.parse_args()

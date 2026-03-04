@@ -12,17 +12,18 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-# Config
-WORKSPACE = Path("/Users/claw/.openclaw/workspace")
-UPLOAD_DIR = WORKSPACE / "upload"
-DB_PATH = WORKSPACE / "tools/vod-tracker/tracker.db"
-CHANNELS_FILE = WORKSPACE / "tools/vod-tracker/channels.json"
+# Config - Use environment variables with fallbacks
+WORKSPACE = Path(os.environ.get("VOD_WORKSPACE", Path(__file__).parent))
+DATA_DIR = WORKSPACE / "data"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+UPLOAD_DIR = DATA_DIR / "upload"
+DB_PATH = DATA_DIR / "tracker.db"
+CHANNELS_FILE = DATA_DIR / "channels.json"
 
 # YouTube API (using yt-dlp for free, no API key needed)
 YT_DLP_OPTS = [
     "yt-dlp",
-    "--format", "best[height<=1080]",  # 1080p max for storage
-    "--codec", "libx264",  # Efficient codec
+    "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",  # 1080p max
     "--merge-output-format", "mp4",
 ]
 
@@ -234,12 +235,35 @@ def process_channel(conn, channel_id):
                  (datetime.now().isoformat(), video_id))
     conn.commit()
     
-    # Delete original to save space
-    try:
-        os.remove(file_path)
-        print(f"  Deleted original to save space")
-    except:
-        pass
+    # Delete original to save space - ONLY after verifying clips are valid
+    if clips and len(clips) > 0:
+        all_clips_valid = True
+        for clip_path in clips:
+            # Verify clip with ffprobe
+            cmd = ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                   "-of", "default=noprint_wrappers=1:nokey=1", clip_path]
+            try:
+                result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+                duration = float(result.stdout.strip())
+                if duration <= 0:
+                    all_clips_valid = False
+                    print(f"  Warning: Invalid clip {clip_path} (duration={duration})")
+                    break
+            except Exception as e:
+                all_clips_valid = False
+                print(f"  Warning: Could not verify clip {clip_path}: {e}")
+                break
+        
+        if all_clips_valid:
+            try:
+                os.remove(file_path)
+                print(f"  Deleted original to save space (verified {len(clips)} clips)")
+            except Exception as e:
+                print(f"  Warning: Could not delete original: {e}")
+        else:
+            print(f"  Keeping original due to invalid clips")
+    else:
+        print(f"  Keeping original - no clips were created")
     
     print(f"  Done! Created {len(clips)} clips")
 

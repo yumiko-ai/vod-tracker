@@ -4,6 +4,7 @@ Clip Finder - Finds the "best bits" in VODs
 Transcribes with Whisper, analyzes with LLM, extracts highlight clips
 """
 
+import html
 import json
 import os
 import re
@@ -31,6 +32,72 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "openai")  # openai, anthropic, ol
 LLM_MODEL = os.environ.get("LLM_MODEL", "gpt-4o-mini")  # gpt-4o-mini, claude-3-haiku, llama3.2
 LLM_API_KEY = os.environ.get("OPENAI_API_KEY", "") or os.environ.get("ANTHROPIC_API_KEY", "")
 LLM_API_URL = os.environ.get("LLM_API_URL", "http://localhost:11434/api/generate")
+
+# Allowed categories for validation
+ALLOWED_CATEGORIES = {"drama", "funny", "discussion", "highlight"}
+
+# Minimum valid video duration (seconds)
+MIN_VIDEO_DURATION = 5
+
+
+def sanitize_channel_id(channel_id: str) -> str:
+    """
+    Sanitize channel_id to prevent path traversal attacks.
+    Only allows alphanumeric, underscore, and hyphen characters.
+    """
+    # Only allow safe characters
+    sanitized = re.sub(r'[^a-zA-Z0-9_-]', '', channel_id)
+    # Prevent empty or dot-only paths
+    if not sanitized or sanitized in ('.', '..'):
+        return "unknown"
+    return sanitized
+
+
+def validate_timestamp(value, default=0):
+    """
+    Validate and cast timestamp to int.
+    Handles string, float, int, and None values.
+    """
+    if value is None:
+        return default
+    try:
+        return int(float(value))
+    except (ValueError, TypeError):
+        return default
+
+
+def validate_viral_score(value, default=5):
+    """
+    Validate viral_score is in range 1-10.
+    Returns default if invalid.
+    """
+    try:
+        score = int(value)
+        if 1 <= score <= 10:
+            return score
+        return default
+    except (ValueError, TypeError):
+        return default
+
+
+def validate_category(value, default="highlight"):
+    """
+    Validate category is in allowed list.
+    Returns default if invalid.
+    """
+    if value and isinstance(value, str) and value.lower() in ALLOWED_CATEGORIES:
+        return value.lower()
+    return default
+
+
+def sanitize_text(text: str) -> str:
+    """
+    Sanitize LLM-sourced text to prevent XSS.
+    Escapes HTML characters.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    return html.escape(text.strip())
 
 
 # System prompt for finding highlights - tuned for YouTube drama/commentary content
@@ -352,7 +419,7 @@ def parse_llm_response(content: str) -> Optional[dict]:
 
 
 def extract_clip(video_path: str, start_time: int, end_time: int, output_path: str,
-                 add_context: int = 5) -> bool:
+                 add_context: int = 5, video_duration: int = None) -> bool:
     """
     Extract a clip from the video using ffmpeg
     
@@ -362,13 +429,27 @@ def extract_clip(video_path: str, start_time: int, end_time: int, output_path: s
         end_time: End time in seconds
         output_path: Output file path
         add_context: Add N seconds before/after for context
+        video_duration: Video duration in seconds (for bounds checking)
     
     Returns:
         True if clip was created successfully
     """
-    # Add context padding
+    # Calculate actual start with context padding
     actual_start = max(0, start_time - add_context)
-    duration = end_time - actual_start + add_context
+    
+    # Calculate duration including end context padding
+    actual_end = end_time + add_context
+    
+    # Clamp end to video duration if known
+    if video_duration:
+        actual_end = min(actual_end, video_duration)
+    
+    duration = actual_end - actual_start
+    
+    # Skip if duration is invalid
+    if duration <= 0:
+        print(f"Invalid clip duration: {duration}s (start={actual_start}, end={actual_end})")
+        return False
     
     cmd = [
         "ffmpeg", "-y",
@@ -407,6 +488,9 @@ def process_highlights(video_path: str, video_id: str, highlights: list,
         print("  No highlights to process")
         return []
     
+    # Sanitize channel_id to prevent path traversal
+    channel_id = sanitize_channel_id(channel_id)
+    
     # Get video duration for validation
     video_duration = get_video_duration(video_path)
     if not video_duration:
@@ -419,61 +503,72 @@ def process_highlights(video_path: str, video_id: str, highlights: list,
     created_clips = []
     
     # Sort by viral score (highest first) and dedupe overlapping segments
-    highlights = sorted(highlights, key=lambda x: x.get("viral_score", 0), reverse=True)
+    highlights = sorted(highlights, key=lambda x: validate_viral_score(x.get("viral_score", 0)), reverse=True)
     
     # Filter overlapping segments (keep higher scoring ones)
     non_overlapping = []
     for h in highlights:
-        start = h.get("start_time", 0)
-        end = h.get("end_time", 0)
+        # Validate and cast timestamps
+        start = validate_timestamp(h.get("start_time"), default=0)
+        end = validate_timestamp(h.get("end_time"), default=0)
         
-        # Validate timestamps
+        # Validate timestamps are within video bounds
         if video_duration:
-            start = min(start, video_duration - 10)
+            # Clamp start to valid range (never negative, at least 10s from end for short videos)
+            start = max(0, min(start, max(0, video_duration - MIN_VIDEO_DURATION)))
             end = min(end, video_duration)
         
+        # Skip if end <= start after validation
         if end <= start:
             continue
         
         # Check for overlap with existing
         overlaps = False
         for existing in non_overlapping:
-            ex_start = existing.get("start_time", 0)
-            ex_end = existing.get("end_time", 0)
+            ex_start = existing.get("_validated_start", 0)
+            ex_end = existing.get("_validated_end", 0)
             # Check if more than 50% overlap
             overlap_start = max(start, ex_start)
             overlap_end = min(end, ex_end)
             if overlap_start < overlap_end:
                 overlap_duration = overlap_end - overlap_start
                 clip_duration = min(end - start, ex_end - ex_start)
-                if overlap_duration / clip_duration > 0.5:
+                if clip_duration > 0 and overlap_duration / clip_duration > 0.5:
                     overlaps = True
                     break
         
         if not overlaps:
+            # Store validated timestamps for overlap checking
+            h["_validated_start"] = start
+            h["_validated_end"] = end
             non_overlapping.append(h)
     
     # Limit to top 10 highlights
     highlights = non_overlapping[:10]
     
     for i, h in enumerate(highlights):
-        start = h.get("start_time", 0)
-        end = h.get("end_time", 0)
-        title = h.get("title", f"Highlight {i+1}")
-        description = h.get("description", "")
-        category = h.get("category", "highlight")
-        viral_score = h.get("viral_score", 5)
+        # Use validated timestamps
+        start = h.get("_validated_start", 0)
+        end = h.get("_validated_end", 0)
         
-        # Sanitize title for filename
+        # Sanitize LLM-sourced text fields
+        title = sanitize_text(h.get("title", f"Highlight {i+1}"))
+        description = sanitize_text(h.get("description", ""))
+        
+        # Validate structured fields
+        category = validate_category(h.get("category"))
+        viral_score = validate_viral_score(h.get("viral_score"))
+        
+        # Sanitize title for filename (additional safety for filesystem)
         safe_title = re.sub(r'[^\w\s-]', '', title).strip()[:50]
-        safe_title = re.sub(r'[-\s]+', '_', safe_title)
+        safe_title = re.sub(r'[-\s]+', '_', safe_title) or f"highlight_{i+1}"
         
         clip_name = f"{video_id}__{start}-{end}__{safe_title}.mp4"
         clip_path = output_dir / clip_name
         
         print(f"  Extracting: {title} ({start}s-{end}s, score={viral_score})")
         
-        if extract_clip(video_path, start, end, str(clip_path)):
+        if extract_clip(video_path, start, end, str(clip_path), video_duration=video_duration):
             created_clips.append(str(clip_path))
             
             # Log to database

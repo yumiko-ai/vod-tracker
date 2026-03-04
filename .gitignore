@@ -10,3 +10,10 @@ temp/
 *.webm
 *.part
 *.ytdl
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.hypothesis/

@@ -1,0 +1,10 @@
+# Core dependencies
+yt-dlp>=2024.1.0
+
+# Best bits feature (optional - for transcription)
+# Uncomment if using local Whisper:
+# openai-whisper>=20231117
+
+# For API-based transcription or LLM calls:
+# openai>=1.0.0
+# anthropic>=0.18.0

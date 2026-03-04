@@ -101,11 +101,13 @@ def get_latest_vod(channel_id):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
-        if result.returncode != 0:
-            logger.error(f"yt-dlp failed for {channel_id}: {result.stderr.strip()}")
-            return None
-        
+        # Process stdout regardless of return code - yt-dlp may have valid output
+        # before encountering an error (e.g., age-restricted videos)
         lines = result.stdout.strip().split("\n")
+        
+        # Log errors but continue processing
+        if result.returncode != 0:
+            logger.warning(f"yt-dlp had errors for {channel_id}: {result.stderr.strip()}")
         
         if not lines or lines == ['']:
             logger.warning(f"No videos found for channel {channel_id}")

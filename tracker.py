@@ -89,9 +89,11 @@ def get_latest_vod(channel_id):
     # Use --print with format specifiers to get id, title, and duration
     # Note: --flat-playlist is NOT used because it doesn't return duration
     # Use --playlist-end to limit results (fetching all videos is slow)
+    # Use --ignore-errors to continue processing after errors (e.g., age-restricted videos)
     cmd = [
         "yt-dlp",
         "--playlist-end", "10",  # Only fetch first 10 videos (most recent)
+        "--ignore-errors",  # Continue processing after errors (age-restricted, etc.)
         "--print", "%(id)s|%(title)s|%(duration)s",
         f"https://www.youtube.com/channel/{channel_id}/videos"
     ]
@@ -101,13 +103,15 @@ def get_latest_vod(channel_id):
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
         
-        # Process stdout regardless of return code - yt-dlp may have valid output
-        # before encountering an error (e.g., age-restricted videos)
-        lines = result.stdout.strip().split("\n")
-        
-        # Log errors but continue processing
+        # Log non-zero exit codes as warnings, not errors
+        # yt-dlp may still have valid output even with exit code 1 (e.g., age-restricted videos)
         if result.returncode != 0:
-            logger.warning(f"yt-dlp had errors for {channel_id}: {result.stderr.strip()}")
+            # Check if there's any stderr output to log
+            stderr_msg = result.stderr.strip() if result.stderr else "unknown error"
+            logger.warning(f"yt-dlp returned exit code {result.returncode} for {channel_id}: {stderr_msg}")
+            logger.info(f"Attempting to process output despite non-zero exit code...")
+
+        lines = result.stdout.strip().split("\n")
         
         if not lines or lines == ['']:
             logger.warning(f"No videos found for channel {channel_id}")

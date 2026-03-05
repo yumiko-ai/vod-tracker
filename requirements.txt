@@ -1,5 +1,6 @@
 # Core dependencies
 yt-dlp>=2024.1.0
+python-dotenv>=1.0.0
 
 # Best bits feature (optional - for transcription)
 # Uncomment if using local Whisper:

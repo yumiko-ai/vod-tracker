@@ -15,6 +15,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Config - Use environment variables with fallbacks
 WORKSPACE = Path(os.environ.get("VOD_WORKSPACE", Path(__file__).parent))
 DATA_DIR = WORKSPACE / "data"

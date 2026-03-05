@@ -13,6 +13,10 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,

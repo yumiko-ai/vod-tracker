@@ -54,6 +54,33 @@ Add channel IDs to `channels.json`:
 }
 ```
 
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure your API keys:
+
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your actual credentials:
+
+```bash
+# Required for OpenAI provider (default)
+OPENAI_API_KEY=sk-your-key-here
+
+# Required for Anthropic provider
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Required for MiniMax provider
+MINIMAX_API_KEY=your-key-here
+MINIMAX_GROUP_ID=your-group-id-here
+
+# Optional: For local Ollama
+OLLAMA_HOST=http://localhost:11434
+```
+
+**Important:** Never commit `.env` to version control. It's already in `.gitignore`.
+
 ## Usage
 
 ### Basic VOD Tracking

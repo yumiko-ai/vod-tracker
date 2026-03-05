@@ -31,7 +31,7 @@ DATA_DIR = WORKSPACE / "data"
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "upload"
 DB_PATH = DATA_DIR / "tracker.db"
-CHANNELS_FILE = DATA_DIR / "channels.json"
+CHANNELS_FILE = WORKSPACE / "channels.json"  # channels.json is at root, not in data/
 
 # YouTube API (using yt-dlp for free, no API key needed)
 YT_DLP_OPTS = [

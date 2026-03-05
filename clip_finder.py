@@ -392,7 +392,7 @@ def _call_minimax(transcript_text: str, model: str) -> Optional[dict]:
     }
     model_id = model_mapping.get(model.lower(), model)
     
-    url = "https://api.minimax.chat/v1/text/chatcompletion_v2"
+    url = "https://api.minimax.io/v1/text/chatcompletion_v2"
     payload = {
         "model": model_id,
         "messages": [
@@ -405,8 +405,7 @@ def _call_minimax(transcript_text: str, model: str) -> Optional[dict]:
     
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-        "X-Group-Id": group_id
+        "Authorization": f"Bearer {api_key}"
     }
     
     try:

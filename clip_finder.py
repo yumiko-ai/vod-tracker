@@ -514,14 +514,15 @@ def extract_clip(video_path: str, start_time: int, end_time: int, output_path: s
         print(f"Invalid clip duration: {duration}s (start={actual_start}, end={actual_end})")
         return False
     
+    # Use better quality settings: CRF 20, medium preset
     cmd = [
         "ffmpeg", "-y",
         "-ss", str(actual_start),
         "-i", video_path,
         "-t", str(duration),
         "-c:v", "libx264",
-        "-preset", "fast",
-        "-crf", "23",  # Better quality for highlights
+        "-preset", "medium",  # Better quality than "fast"
+        "-crf", "20",  # Good quality (lower = better, 18-23 is good range)
         "-c:a", "aac",
         "-b:a", "128k",
         "-movflags", "+faststart",
@@ -545,7 +546,7 @@ def process_highlights(video_path: str, video_id: str, highlights: list,
     """
     Extract highlight clips from video
     
-    Returns list of created clip paths
+    Returns list of clip dicts with metadata (path, title, viral_score, etc.)
     """
     if not highlights:
         print("  No highlights to process")
@@ -632,7 +633,19 @@ def process_highlights(video_path: str, video_id: str, highlights: list,
         print(f"  Extracting: {title} ({start}s-{end}s, score={viral_score})")
         
         if extract_clip(video_path, start, end, str(clip_path), video_duration=video_duration):
-            created_clips.append(str(clip_path))
+            # Return clip dict with metadata (not just path)
+            clip_info = {
+                "path": str(clip_path),
+                "clip_path": str(clip_path),
+                "title": title,
+                "description": description,
+                "category": category,
+                "viral_score": viral_score,
+                "start_time": start,
+                "end_time": end,
+                "duration": end - start
+            }
+            created_clips.append(clip_info)
             
             # Log to database
             if conn:
@@ -649,9 +662,10 @@ def process_highlights(video_path: str, video_id: str, highlights: list,
 
 
 def find_best_bits(video_path: str, video_id: str, channel_id: str = "unknown",
-                   conn: sqlite3.Connection = None, keep_transcript: bool = False) -> dict:
+                   conn: sqlite3.Connection = None, keep_transcript: bool = False,
+                   copy_to_upload: bool = True) -> dict:
     """
-    Main pipeline: Transcribe -> Analyze -> Extract highlights
+    Main pipeline: Transcribe -> Analyze -> Extract highlights -> Copy best to upload
     
     Args:
         video_path: Path to video file
@@ -659,6 +673,7 @@ def find_best_bits(video_path: str, video_id: str, channel_id: str = "unknown",
         channel_id: Channel identifier for organization
         conn: Database connection (optional)
         keep_transcript: Keep transcript JSON file
+        copy_to_upload: Copy best clips to ready_for_upload folder
     
     Returns:
         Dict with highlights and created clips
@@ -669,7 +684,8 @@ def find_best_bits(video_path: str, video_id: str, channel_id: str = "unknown",
         "video_id": video_id,
         "transcript": None,
         "highlights": [],
-        "clips": []
+        "clips": [],
+        "upload_clips": []
     }
     
     # Step 1: Transcribe
@@ -708,8 +724,83 @@ def find_best_bits(video_path: str, video_id: str, channel_id: str = "unknown",
         result["clips"] = clips
         print(f"  Created {len(clips)} highlight clips")
     
+    # Step 4: Copy best clips to upload folder
+    if copy_to_upload and result["clips"]:
+        upload_clips = copy_best_clips_to_upload(video_id, channel_id, result["clips"])
+        result["upload_clips"] = upload_clips
+        print(f"  Copied {len(upload_clips)} clips to upload folder")
+    
     print("=== Done ===\n")
     return result
+
+
+def copy_best_clips_to_upload(video_id: str, channel_id: str, clips: list, 
+                               min_score: int = 7, max_clips: int = 5) -> list:
+    """
+    Copy the best scoring clips to the ready_for_upload folder
+    
+    Args:
+        video_id: YouTube video ID
+        channel_id: Channel identifier
+        clips: List of clip dicts with viral_score (from process_highlights return)
+        min_score: Minimum viral_score to consider (default 7)
+        max_clips: Maximum clips to copy (default 5)
+    
+    Returns:
+        List of copied clip paths
+    """
+    import shutil
+    
+    if not clips:
+        return []
+    
+    # Create upload folder
+    upload_dir = DATA_DIR / "ready_for_upload" / sanitize_channel_id(channel_id)
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Filter and sort clips:
+    # 1. viral_score >= min_score
+    # 2. Duration 30s - 3min (optimal for YouTube)
+    # 3. Sort by viral_score descending
+    good_clips = [
+        c for c in clips
+        if c.get("viral_score", 0) >= min_score
+        and 30 <= c.get("duration", 0) <= 180
+    ]
+    
+    # If no clips meet the criteria, take top clips by score
+    if not good_clips:
+        good_clips = sorted(clips, key=lambda x: x.get("viral_score", 0), reverse=True)[:max_clips]
+    else:
+        good_clips = sorted(good_clips, key=lambda x: x.get("viral_score", 0), reverse=True)[:max_clips]
+    
+    copied = []
+    for clip in good_clips:
+        src_path = Path(clip["path"]) if isinstance(clip.get("path"), str) else Path(clip["clip_path"]) if clip.get("clip_path") else None
+        if not src_path:
+            # Handle case where clips is list of strings (old format)
+            src_path = Path(clip) if isinstance(clip, str) else None
+        if not src_path or not src_path.exists():
+            print(f"  Clip not found: {src_path}")
+            continue
+        
+        # Create descriptive filename for upload
+        title = clip.get("title", "highlight") if isinstance(clip, dict) else "highlight"
+        safe_title = re.sub(r'[^\w\s-]', '', title).strip()[:50]
+        safe_title = re.sub(r'[-\s]+', '_', safe_title)
+        
+        score = clip.get("viral_score", 0) if isinstance(clip, dict) else 0
+        dest_name = f"{video_id}__score{score}__{safe_title}.mp4"
+        dest_path = upload_dir / dest_name
+        
+        try:
+            shutil.copy2(str(src_path), str(dest_path))
+            copied.append(str(dest_path))
+            print(f"  Copied to upload folder: {dest_name}")
+        except Exception as e:
+            print(f"  Failed to copy clip: {e}")
+    
+    return copied
 
 
 def process_from_db(conn: sqlite3.Connection, limit: int = 5, reprocess: bool = False):
@@ -748,11 +839,32 @@ def process_from_db(conn: sqlite3.Connection, limit: int = 5, reprocess: bool = 
     print(f"Found {len(vods)} VODs to process")
     
     for video_id, file_path, channel_id in vods:
-        if not os.path.exists(file_path):
-            print(f"File not found: {file_path}")
+        # Issue 1: Handle missing files gracefully
+        if not file_path or not os.path.exists(file_path):
+            print(f"  File not found for {video_id}: {file_path}")
+            print(f"  Marking as 'file_missing' in database")
+            conn.execute("UPDATE vods SET status = 'file_missing' WHERE video_id = ?", (video_id,))
+            conn.commit()
             continue
         
-        find_best_bits(file_path, video_id, channel_id, conn)
+        result = find_best_bits(file_path, video_id, channel_id, conn)
+        
+        # Copy best clips to upload folder
+        if result.get("clips"):
+            # Get clip details from database
+            cur2 = conn.execute(
+                "SELECT clip_path, title, viral_score FROM highlights WHERE video_id = ?",
+                (video_id,)
+            )
+            db_clips = []
+            for row in cur2.fetchall():
+                db_clips.append({
+                    "clip_path": row[0],
+                    "title": row[1],
+                    "viral_score": row[2],
+                    "duration": 0  # Will be filtered out if 0
+                })
+            copy_best_clips_to_upload(video_id, channel_id, db_clips)
 
 
 # CLI interface
@@ -772,6 +884,9 @@ def main():
     parser.add_argument("--model", default=LLM_MODEL, help="LLM model to use")
     parser.add_argument("--provider", default=LLM_PROVIDER, help="LLM provider (openai, anthropic, minimax, ollama)")
     parser.add_argument("--whisper-model", default=WHISPER_MODEL, help="Whisper model size")
+    parser.add_argument("--no-upload-copy", action="store_true", help="Don't copy best clips to upload folder")
+    parser.add_argument("--min-score", type=int, default=7, help="Minimum viral score for upload folder (default: 7)")
+    parser.add_argument("--max-clips", type=int, default=5, help="Max clips to copy to upload folder (default: 5)")
     
     args = parser.parse_args()
     
@@ -787,7 +902,11 @@ def main():
         process_from_db(conn, args.limit, args.reprocess)
     elif args.video:
         video_id = args.video_id or Path(args.video).stem
-        find_best_bits(args.video, video_id, args.channel, conn, args.keep_transcript)
+        find_best_bits(
+            args.video, video_id, args.channel, conn, 
+            args.keep_transcript,
+            copy_to_upload=not args.no_upload_copy
+        )
     else:
         parser.print_help()
     

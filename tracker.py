@@ -36,9 +36,9 @@ CHANNELS_FILE = WORKSPACE / "channels.json"  # channels.json is at root, not in 
 # YouTube API (using yt-dlp for free, no API key needed)
 YT_DLP_OPTS = [
     "yt-dlp",
-    "--cookies-from-browser", "chrome",
-    "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",  # 1080p max
+    "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
     "--merge-output-format", "mp4",
+    "--extractor-args", "youtube:player_client=android",
 ]
 
 
@@ -97,10 +97,10 @@ def get_latest_vod(channel_id):
     # Use --ignore-errors to continue processing after errors (e.g., age-restricted videos)
     cmd = [
         "yt-dlp",
-        "--remote-components", "ejs:github",  # Enable JS challenge solver for YouTube
         "--playlist-end", "10",  # Only fetch first 10 videos (most recent)
         "--ignore-errors",  # Continue processing after errors (age-restricted, etc.)
         "--print", "%(id)s|%(title)s|%(duration)s",
+        "--extractor-args", "youtube:player_client=android",
         f"https://www.youtube.com/channel/{channel_id}/streams"
     ]
     

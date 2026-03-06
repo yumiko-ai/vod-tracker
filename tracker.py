@@ -36,7 +36,7 @@ CHANNELS_FILE = WORKSPACE / "channels.json"  # channels.json is at root, not in 
 # YouTube API (using yt-dlp for free, no API key needed)
 YT_DLP_OPTS = [
     "yt-dlp",
-    "--remote-components", "ejs:github",  # Enable JS challenge solver for YouTube
+    "--cookies-from-browser", "chrome",
     "--format", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",  # 1080p max
     "--merge-output-format", "mp4",
 ]
